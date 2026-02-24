@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "description": "CHEQ Form Guard backend API",
   "engines": {
-    "node": "18.x"
+    "node": "24.x"
   }
 }
