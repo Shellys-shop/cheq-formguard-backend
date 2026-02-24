@@ -1,11 +1,7 @@
-// api/create-workflow.js
-// Creates the CHEQ Form Guard validation workflow in HubSpot
-// Called from HubSpot UI Extension via hubspot.fetch()
-
 const WORKFLOW_NAME = "CHEQ Form Guard — Contact Validation";
 const CHEQ_ENDPOINT = "https://rti-global.cheqzone.com/v3/user-validation/";
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://app.hubspot.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -14,17 +10,10 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const token = req.headers.authorization?.replace("Bearer ", "");
-  if (!token) {
-    return res.status(401).json({ status: "ERROR", message: "Missing Authorization header." });
-  }
+  if (!token) return res.status(401).json({ status: "ERROR", message: "Missing Authorization header." });
 
-  const {
-    apiKey,
-    tagHash,
-    triggerMode = "contact_created",
-    comprehensiveMode = true,
-    phoneValidation = true,
-  } = req.body;
+  const { apiKey, tagHash, triggerMode = "contact_created",
+          comprehensiveMode = true, phoneValidation = true } = req.body;
 
   if (!apiKey || !tagHash) {
     return res.status(400).json({ status: "ERROR", message: "apiKey and tagHash are required." });
@@ -32,8 +21,6 @@ export default async function handler(req, res) {
 
   const mode = comprehensiveMode ? "comprehensive" : "standard";
 
-  // Build the URL-encoded request body for the CHEQ API call
-  // HubSpot workflow webhook action supports {% contact.property %} tokens
   const cheqRequestBody = [
     `ApiKey=${encodeURIComponent(apiKey)}`,
     `TagHash=${encodeURIComponent(tagHash)}`,
@@ -47,7 +34,7 @@ export default async function handler(req, res) {
     phoneValidation ? `Phone={% contact.phone %}` : null,
   ].filter(Boolean).join("&");
 
-  // Delete existing workflow with same name to allow redeployment
+  // Delete existing workflow with same name
   try {
     const listResp = await fetch("https://api.hubapi.com/automation/v4/flows", {
       headers: { Authorization: `Bearer ${token}` },
@@ -59,43 +46,29 @@ export default async function handler(req, res) {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
-      console.log(`Deleted existing workflow: ${existing.id}`);
     }
   } catch (e) {
-    console.warn("Could not check/delete existing workflow:", e.message);
-  }
-
-  // Build enrollment criteria based on trigger mode
-  const enrollmentCriteria = {
-    shouldReEnroll: false,
-    type: triggerMode === "form_submission" ? "PROPERTY_VALUE" : "CONTACT_CREATED",
-    ...(triggerMode === "form_submission" && {
-      propertyName: "cq_req_id",
-      operator: "SET_ANY_VALUE",
-    }),
-    filterBranches: {
-      filterBranchType: "AND",
-      filterBranchOperator: "AND",
-      filters: [{
-        filterType: "PROPERTY",
-        property: "cq_req_id",
-        operation: { operationType: "MULTISTRING", operator: "IS_KNOWN" },
-      }],
-      filterBranches: [],
-    },
-  };
-
-  // For "both" trigger mode, use CONTACT_CREATED as primary
-  if (triggerMode === "both") {
-    enrollmentCriteria.type = "CONTACT_CREATED";
-    enrollmentCriteria.shouldReEnroll = true;
+    console.warn("Could not check existing workflow:", e.message);
   }
 
   const workflowDef = {
     name: WORKFLOW_NAME,
     type: "CONTACT_DATE_PROPERTY",
     enabled: true,
-    enrollmentCriteria,
+    enrollmentCriteria: {
+      shouldReEnroll: triggerMode === "both",
+      type: triggerMode === "form_submission" ? "PROPERTY_VALUE" : "CONTACT_CREATED",
+      filterBranches: {
+        filterBranchType: "AND",
+        filterBranchOperator: "AND",
+        filters: [{
+          filterType: "PROPERTY",
+          property: "cq_req_id",
+          operation: { operationType: "MULTISTRING", operator: "IS_KNOWN" },
+        }],
+        filterBranches: [],
+      },
+    },
     actions: [
       {
         type: "WEBHOOK",
@@ -111,26 +84,19 @@ export default async function handler(req, res) {
             { responsePath: "threat_type_code",   contactProperty: "cq_threat_type"   },
             { responsePath: "user.email.verdict", contactProperty: "cq_email_verdict" },
             { responsePath: "user.phone.verdict", contactProperty: "cq_phone_verdict" },
-            { responsePath: "request_id",         contactProperty: "cq_req_id"        },
           ],
         },
       },
       {
         type: "SET_CONTACT_PROPERTY",
-        fields: {
-          propertyName: "cq_last_checked",
-          value: "{% NOW %}",
-        },
+        fields: { propertyName: "cq_last_checked", value: "{% NOW %}" },
       },
     ],
   };
 
   const createResp = await fetch("https://api.hubapi.com/automation/v4/flows", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(workflowDef),
   });
 
@@ -141,7 +107,6 @@ export default async function handler(req, res) {
       status: "SUCCESS",
       message: `Workflow "${WORKFLOW_NAME}" created successfully.`,
       workflowId: createData.id,
-      workflowName: createData.name,
     });
   }
 
@@ -150,4 +115,4 @@ export default async function handler(req, res) {
     message: createData?.message || "Failed to create workflow. Ensure your portal has Professional or Enterprise Workflows.",
     details: createData,
   });
-}
+};

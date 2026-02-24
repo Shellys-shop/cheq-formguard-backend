@@ -1,7 +1,3 @@
-// api/save-config.js
-// Validates CHEQ credentials by making a test API call
-// Called from HubSpot UI Extension via hubspot.fetch()
-
 const https = require("https");
 
 function testCheqCredentials(apiKey, tagHash) {
@@ -15,7 +11,7 @@ function testCheqCredentials(apiKey, tagHash) {
       EventType: "form_submission",
       AcceptLanguage: "en-US,en;q=0.9",
       ClientIP: "1.1.1.1",
-      UserAgent: "HubSpot-CHEQ-FormGuard-PoC/1.0",
+      UserAgent: "HubSpot-CHEQ-FormGuard/1.0",
     }).toString();
 
     const options = {
@@ -26,7 +22,6 @@ function testCheqCredentials(apiKey, tagHash) {
         "Content-Type": "application/x-www-form-urlencoded",
         "Content-Length": Buffer.byteLength(body),
         Accept: "application/json",
-        Connection: "keep-alive",
       },
     };
 
@@ -34,14 +29,12 @@ function testCheqCredentials(apiKey, tagHash) {
       let data = "";
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {
-        // 200, 201, 400 all mean credentials are valid
-        // (400 just means our test payload is incomplete, not that auth failed)
         if ([200, 201, 400].includes(res.statusCode)) {
-          resolve({ valid: true, statusCode: res.statusCode });
+          resolve({ valid: true });
         } else if (res.statusCode === 401) {
-          resolve({ valid: false, error: "Invalid API Key or Tag Hash. Please check your CHEQ Platform credentials." });
+          resolve({ valid: false, error: "Invalid API Key or Tag Hash." });
         } else {
-          resolve({ valid: false, error: `Unexpected response from CHEQ API: ${res.statusCode}` });
+          resolve({ valid: false, error: `Unexpected CHEQ response: ${res.statusCode}` });
         }
       });
     });
@@ -53,8 +46,7 @@ function testCheqCredentials(apiKey, tagHash) {
   });
 }
 
-export default async function handler(req, res) {
-  // CORS headers — HubSpot UI Extensions require this
+module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://app.hubspot.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -63,26 +55,21 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const { apiKey, tagHash, hostDomain, triggerMode, observationMode,
-          gibberishEngine, phoneValidation, comprehensiveMode,
-          applyToContacts, applyToLeads } = req.body;
+          gibberishEngine, phoneValidation, comprehensiveMode } = req.body;
 
   if (!apiKey || !tagHash) {
     return res.status(400).json({ status: "ERROR", message: "API Key and Tag Hash are required." });
   }
 
-  // Validate against CHEQ API
   const validation = await testCheqCredentials(apiKey, tagHash);
   if (!validation.valid) {
     return res.status(400).json({ status: "ERROR", message: validation.error });
   }
 
-  // In production: persist to a DB or encrypted store
-  // For PoC: return success — config is stored in Vercel env vars set manually
   return res.status(200).json({
     status: "SUCCESS",
     message: "Credentials validated successfully.",
     config: { apiKey, tagHash, hostDomain, triggerMode, observationMode,
-              gibberishEngine, phoneValidation, comprehensiveMode,
-              applyToContacts, applyToLeads },
+              gibberishEngine, phoneValidation, comprehensiveMode },
   });
-}
+};
