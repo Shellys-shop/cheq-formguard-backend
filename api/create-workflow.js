@@ -1,118 +1,105 @@
-const WORKFLOW_NAME = "CHEQ Form Guard — Contact Validation";
-const CHEQ_ENDPOINT = "https://rti-global.cheqzone.com/v3/user-validation/";
-
 module.exports = async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://app.hubspot.com");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+    if (req.method === "OPTIONS") return res.status(200).end();
+    if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const token = req.headers.authorization?.replace("Bearer ", "");
-  if (!token) return res.status(401).json({ status: "ERROR", message: "Missing Authorization header." });
+    const token = process.env.HUBSPOT_ACCESS_TOKEN ||
+          (req.headers.authorization && req.headers.authorization.replace("Bearer ", ""));
 
-  const { apiKey, tagHash, triggerMode = "contact_created",
-          comprehensiveMode = true, phoneValidation = true } = req.body;
-
-  if (!apiKey || !tagHash) {
-    return res.status(400).json({ status: "ERROR", message: "apiKey and tagHash are required." });
-  }
-
-  const mode = comprehensiveMode ? "comprehensive" : "standard";
-
-  const cheqRequestBody = [
-    `ApiKey=${encodeURIComponent(apiKey)}`,
-    `TagHash=${encodeURIComponent(tagHash)}`,
-    `RequestID={% contact.cq_req_id %}`,
-    `Email={% contact.email %}`,
-    `Mode=${mode}`,
-    `EventType=form_submission`,
-    `AcceptLanguage=en-US%2Cen%3Bq%3D0.9`,
-    `firstName={% contact.firstname %}`,
-    `lastName={% contact.lastname %}`,
-    phoneValidation ? `Phone={% contact.phone %}` : null,
-  ].filter(Boolean).join("&");
-
-  // Delete existing workflow with same name
-  try {
-    const listResp = await fetch("https://api.hubapi.com/automation/v4/flows", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const listData = await listResp.json();
-    const existing = (listData.results || []).find((w) => w.name === WORKFLOW_NAME);
-    if (existing) {
-      await fetch(`https://api.hubapi.com/automation/v4/flows/${existing.id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+    if (!token) {
+          return res.status(400).json({ status: "ERROR", message: "No HubSpot access token configured." });
     }
-  } catch (e) {
-    console.warn("Could not check existing workflow:", e.message);
-  }
 
-  const workflowDef = {
-    name: WORKFLOW_NAME,
-    type: "CONTACT_DATE_PROPERTY",
-    enabled: true,
-    enrollmentCriteria: {
-      shouldReEnroll: triggerMode === "both",
-      type: triggerMode === "form_submission" ? "PROPERTY_VALUE" : "CONTACT_CREATED",
-      filterBranches: {
-        filterBranchType: "AND",
-        filterBranchOperator: "AND",
-        filters: [{
-          filterType: "PROPERTY",
-          property: "cq_req_id",
-          operation: { operationType: "MULTISTRING", operator: "IS_KNOWN" },
-        }],
-        filterBranches: [],
-      },
-    },
-    actions: [
-      {
-        type: "WEBHOOK",
-        fields: {
-          url: CHEQ_ENDPOINT,
-          method: "POST",
-          contentType: "APPLICATION_X_WWW_FORM_URLENCODED",
-          requestBody: cheqRequestBody,
-          responsePropertyMappings: [
-            { responsePath: "action",             contactProperty: "cq_action"        },
-            { responsePath: "detected_verdict",   contactProperty: "cq_verdict"       },
-            { responsePath: "risk_score",         contactProperty: "cq_risk_score"    },
-            { responsePath: "threat_type_code",   contactProperty: "cq_threat_type"   },
-            { responsePath: "user.email.verdict", contactProperty: "cq_email_verdict" },
-            { responsePath: "user.phone.verdict", contactProperty: "cq_phone_verdict" },
-          ],
-        },
-      },
-      {
-        type: "SET_CONTACT_PROPERTY",
-        fields: { propertyName: "cq_last_checked", value: "{% NOW %}" },
-      },
-    ],
-  };
+    const body = req.body || {};
+    const { apiKey, tagHash, triggerMode, comprehensiveMode, phoneValidation } = body;
 
-  const createResp = await fetch("https://api.hubapi.com/automation/v4/flows", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(workflowDef),
-  });
+    if (!apiKey || !tagHash) {
+          return res.status(400).json({ status: "ERROR", message: "apiKey and tagHash are required." });
+    }
 
-  const createData = await createResp.json();
+    const baseUrl = "https://api.hubapi.com";
+    const headers = {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+    };
 
-  if (createData.id) {
-    return res.status(200).json({
-      status: "SUCCESS",
-      message: `Workflow "${WORKFLOW_NAME}" created successfully.`,
-      workflowId: createData.id,
+    const workflowName = "CHEQ Form Guard — Contact Validation";
+
+    try {
+          const listRes = await fetch(`${baseUrl}/automation/v4/flows?limit=100`, { headers });
+          if (listRes.ok) {
+                  const listData = await listRes.json();
+                  const existing = (listData.results || []).find(w => w.name === workflowName);
+                  if (existing) {
+                            await fetch(`${baseUrl}/automation/v4/flows/${existing.id}`, { method: "DELETE", headers });
+                  }
+          }
+    } catch (e) { /* ignore */ }
+
+    const cheqParams = new URLSearchParams({
+          ApiKey: apiKey,
+          TagHash: tagHash,
+          RequestID: "{% contact.cq_req_id %}",
+          Email: "{% contact.email %}",
+          FirstName: "{% contact.firstname %}",
+          LastName: "{% contact.lastname %}",
+          Phone: phoneValidation ? "{% contact.phone %}" : "",
+          Mode: comprehensiveMode ? "comprehensive" : "standard",
+          EventType: "form_submission",
     });
-  }
 
-  return res.status(500).json({
-    status: "ERROR",
-    message: createData?.message || "Failed to create workflow. Ensure your portal has Professional or Enterprise Workflows.",
-    details: createData,
-  });
+    const workflow = {
+          name: workflowName,
+          type: "CONTACT_DATE_PROPERTY",
+          enabled: true,
+          enrollmentCriteria: {
+                  type: "AND",
+                  filters: [{ property: "cq_req_id", operation: { operator: "IS_KNOWN" } }]
+          },
+          actions: [
+            {
+                      type: "WEBHOOK",
+                      url: `https://rti-global.cheqzone.com/v3/user-validation/?${cheqParams.toString()}`,
+                      method: "POST",
+                      propertyMappings: [
+                        { sourceProperty: "action",       targetProperty: "cq_action"        },
+                        { sourceProperty: "verdict",      targetProperty: "cq_verdict"       },
+                        { sourceProperty: "riskScore",    targetProperty: "cq_risk_score"    },
+                        { sourceProperty: "threatType",   targetProperty: "cq_threat_type"   },
+                        { sourceProperty: "emailVerdict", targetProperty: "cq_email_verdict" },
+                        { sourceProperty: "phoneVerdict", targetProperty: "cq_phone_verdict" },
+                                ],
+            },
+            {
+                      type: "SET_CONTACT_PROPERTY",
+                      propertyName: "cq_last_checked",
+                      value: "{% NOW %}",
+            }
+                ],
+    };
+
+    const createRes = await fetch(`${baseUrl}/automation/v4/flows`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(workflow),
+    });
+
+    if (!createRes.ok) {
+          const err = await createRes.json();
+          return res.status(400).json({
+                  status: "ERROR",
+                  message: err.message || `HubSpot API error: ${createRes.status}`,
+                  details: err,
+          });
+    }
+
+    const created = await createRes.json();
+    return res.status(200).json({
+          status: "SUCCESS",
+          message: `Workflow "${workflowName}" deployed successfully.`,
+          workflowId: created.id,
+    });
 };
