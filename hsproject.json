@@ -1,6 +1,1 @@
-{
-  "name": "CHEQ Form Guard",
-  "description": "Validates HubSpot contacts against the CHEQ FormGuard API.",
-  "srcDir": "src",
-  "platformVersion": "2025.2"
-}
+
