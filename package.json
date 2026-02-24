@@ -1,0 +1,8 @@
+{
+  "name": "cheq-formguard-backend",
+  "version": "1.0.0",
+  "description": "CHEQ Form Guard backend API — called from HubSpot UI Extension via hubspot.fetch()",
+  "engines": {
+    "node": "18.x"
+  }
+}
