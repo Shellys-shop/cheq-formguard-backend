@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "description": "CHEQ Form Guard backend — validates HubSpot contacts via CHEQ FormGuard",
   "engines": {
-    "node": "18.x"
+    "node": "24.x"
   },
   "dependencies": {
     "@vercel/blob": "^0.27.0"
