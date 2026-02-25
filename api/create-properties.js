@@ -1,78 +1,175 @@
-module.exports = async function handler(req, res) {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+// api/create-properties.js
+// Creates the CHEQ Form Guard property group and contact properties in HubSpot
+// Called from HubSpot UI Extension via hubspot.fetch()
 
-    if (req.method === "OPTIONS") return res.status(200).end();
-    if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
-
-    const token = process.env.HUBSPOT_ACCESS_TOKEN ||
-          (req.headers.authorization && req.headers.authorization.replace("Bearer ", ""));
-
-    if (!token) {
-          return res.status(400).json({ status: "ERROR", message: "No HubSpot access token configured." });
-    }
-
-    const baseUrl = "https://api.hubapi.com";
-    const headers = {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-    };
-
-    const results = { created: [], skipped: [], errors: [] };
-
-    try {
-          const groupRes = await fetch(`${baseUrl}/crm/v3/properties/contacts/groups`, {
-                  method: "POST",
-                  headers,
-                  body: JSON.stringify({ name: "cheq_formguard", label: "CHEQ Form Guard", displayOrder: 1 }),
-          });
-          if (groupRes.ok || groupRes.status === 409) results.created.push("cheq_formguard group");
-    } catch (err) {
-          results.errors.push(`Group: ${err.message}`);
-    }
-
-    const properties = [
-      { name: "cq_req_id",        label: "CHEQ Request ID",    fieldType: "text",   type: "string"   },
-      { name: "cq_action",        label: "CHEQ Action",        fieldType: "text",   type: "string"   },
-      { name: "cq_verdict",       label: "CHEQ Verdict",       fieldType: "text",   type: "string"   },
-      { name: "cq_risk_score",    label: "CHEQ Risk Score",    fieldType: "number", type: "number"   },
-      { name: "cq_threat_type",   label: "CHEQ Threat Type",   fieldType: "text",   type: "string"   },
-      { name: "cq_email_verdict", label: "CHEQ Email Verdict", fieldType: "text",   type: "string"   },
-      { name: "cq_phone_verdict", label: "CHEQ Phone Verdict", fieldType: "text",   type: "string"   },
-      { name: "cq_last_checked",  label: "CHEQ Last Checked",  fieldType: "date",   type: "datetime" },
-        ];
-
-    for (const prop of properties) {
-          try {
-                  const propRes = await fetch(`${baseUrl}/crm/v3/properties/contacts`, {
-                            method: "POST",
-                            headers,
-                            body: JSON.stringify({
-                                        name: prop.name,
-                                        label: prop.label,
-                                        type: prop.type,
-                                        fieldType: prop.fieldType,
-                                        groupName: "cheq_formguard",
-                                        description: `CHEQ Form Guard: ${prop.label}`,
-                            }),
-                  });
-                  if (propRes.ok) {
-                            results.created.push(prop.name);
-                  } else if (propRes.status === 409) {
-                            results.skipped.push(prop.name);
-                  } else {
-                            const err = await propRes.json();
-                            results.errors.push(`${prop.name}: ${err.message || propRes.status}`);
-                  }
-          } catch (err) {
-                  results.errors.push(`${prop.name}: ${err.message}`);
-          }
-    }
-
-    return res.status(200).json({
-          status: "SUCCESS",
-          message: `Created: ${results.created.length}, Skipped (already exist): ${results.skipped.length}, Errors: ${results.errors.length}`,
-          details: results,
-    });
+const GROUP = {
+  name: "cheq_formguard",
+  label: "CHEQ Form Guard",
+  displayOrder: -1,
 };
+
+const PROPERTIES = [
+  {
+    name: "cq_req_id",
+    label: "CHEQ Request ID",
+    description: "The unique RequestID captured by the CHEQ tag on form submission.",
+    groupName: "cheq_formguard",
+    type: "string",
+    fieldType: "text",
+    formField: true,
+  },
+  {
+    name: "cq_action",
+    label: "CHEQ Action",
+    description: "Recommended action from CHEQ: allow, deny, or monitor.",
+    groupName: "cheq_formguard",
+    type: "enumeration",
+    fieldType: "select",
+    options: [
+      { label: "Allow",   value: "allow",   displayOrder: 0, hidden: false, description: "" },
+      { label: "Deny",    value: "deny",    displayOrder: 1, hidden: false, description: "" },
+      { label: "Monitor", value: "monitor", displayOrder: 2, hidden: false, description: "" },
+    ],
+  },
+  {
+    name: "cq_verdict",
+    label: "CHEQ Verdict",
+    description: "Overall risk verdict from CHEQ Form Guard.",
+    groupName: "cheq_formguard",
+    type: "enumeration",
+    fieldType: "select",
+    options: [
+      { label: "Valid",      value: "valid",      displayOrder: 0, hidden: false, description: "" },
+      { label: "Malicious",  value: "malicious",  displayOrder: 1, hidden: false, description: "" },
+      { label: "Suspicious", value: "suspicious", displayOrder: 2, hidden: false, description: "" },
+      { label: "Unknown",    value: "unknown",    displayOrder: 3, hidden: false, description: "" },
+    ],
+  },
+  {
+    name: "cq_risk_score",
+    label: "CHEQ Risk Score",
+    description: "Risk score from CHEQ (0.00 = clean, 1.00 = high risk).",
+    groupName: "cheq_formguard",
+    type: "number",
+    fieldType: "number",
+  },
+  {
+    name: "cq_threat_type",
+    label: "CHEQ Threat Type Code",
+    description: "Numeric threat type code from CHEQ. 0 = no threat.",
+    groupName: "cheq_formguard",
+    type: "number",
+    fieldType: "number",
+  },
+  {
+    name: "cq_email_verdict",
+    label: "CHEQ Email Verdict",
+    description: "Verdict on the email address submitted by this contact.",
+    groupName: "cheq_formguard",
+    type: "enumeration",
+    fieldType: "select",
+    options: [
+      { label: "Valid",      value: "valid",      displayOrder: 0, hidden: false, description: "" },
+      { label: "Malicious",  value: "malicious",  displayOrder: 1, hidden: false, description: "" },
+      { label: "Suspicious", value: "suspicious", displayOrder: 2, hidden: false, description: "" },
+      { label: "Unknown",    value: "unknown",    displayOrder: 3, hidden: false, description: "" },
+    ],
+  },
+  {
+    name: "cq_phone_verdict",
+    label: "CHEQ Phone Verdict",
+    description: "Verdict on the phone number submitted by this contact.",
+    groupName: "cheq_formguard",
+    type: "enumeration",
+    fieldType: "select",
+    options: [
+      { label: "Valid",      value: "valid",      displayOrder: 0, hidden: false, description: "" },
+      { label: "Malicious",  value: "malicious",  displayOrder: 1, hidden: false, description: "" },
+      { label: "Suspicious", value: "suspicious", displayOrder: 2, hidden: false, description: "" },
+      { label: "Unknown",    value: "unknown",    displayOrder: 3, hidden: false, description: "" },
+    ],
+  },
+  {
+    name: "cq_last_checked",
+    label: "CHEQ Last Checked",
+    description: "Timestamp of the last CHEQ Form Guard validation.",
+    groupName: "cheq_formguard",
+    type: "datetime",
+    fieldType: "date",
+  },
+];
+
+async function hubspotRequest(path, method, body, token) {
+  const response = await fetch(`https://api.hubapi.com${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return { status: response.status, data: await response.json() };
+}
+
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "https://app.hubspot.com");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+  // HubSpot passes the portal access token in Authorization header
+  const token = req.headers.authorization?.replace("Bearer ", "");
+  if (!token) {
+    return res.status(401).json({ status: "ERROR", message: "Missing Authorization header." });
+  }
+
+  const results = { created: 0, skipped: 0, errors: [] };
+
+  // 1. Create property group
+  const groupResp = await hubspotRequest(
+    "/crm/v3/properties/contacts/groups",
+    "POST",
+    GROUP,
+    token
+  );
+  if (groupResp.status === 201) {
+    console.log("Created group: cheq_formguard");
+  } else if (groupResp.status === 409) {
+    console.log("Group already exists");
+  } else {
+    console.error("Group creation error:", groupResp.data);
+  }
+
+  // 2. Create each property
+  for (const prop of PROPERTIES) {
+    const propResp = await hubspotRequest(
+      "/crm/v3/properties/contacts",
+      "POST",
+      prop,
+      token
+    );
+    if (propResp.status === 201) {
+      results.created++;
+    } else if (propResp.status === 409) {
+      results.skipped++;
+    } else {
+      results.errors.push({ name: prop.name, error: propResp.data?.message });
+    }
+  }
+
+  if (results.errors.length > 0) {
+    return res.status(500).json({
+      status: "ERROR",
+      message: `Some properties failed: ${results.errors.map((e) => e.name).join(", ")}`,
+      results,
+    });
+  }
+
+  return res.status(200).json({
+    status: "SUCCESS",
+    message: `${results.created} properties created, ${results.skipped} already existed.`,
+    results,
+  });
+}
