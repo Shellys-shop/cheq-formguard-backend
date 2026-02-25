@@ -1,26 +1,39 @@
 // api/create-workflow.js
-// Creates the CHEQ Form Guard validation workflow in HubSpot
-// Called from HubSpot UI Extension via hubspot.fetch()
+// Creates the CHEQ Form Guard validation workflow in HubSpot.
+// Called from HubSpot UI Extension via hubspot.fetch().
+
+import { loadConfig } from "./save-config.js";
 
 const WORKFLOW_NAME = "CHEQ Form Guard — Contact Validation";
 const CHEQ_ENDPOINT = "https://rti-global.cheqzone.com/v3/user-validation/";
 
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://app.hubspot.com");
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const token = req.headers.authorization?.replace("Bearer ", "");
+  // Try header token first, then stored config token
+  let token = req.headers.authorization?.replace("Bearer ", "") || null;
+  const portalId = req.body?.portalId;
+
+  if (portalId) {
+    try {
+      const config = await loadConfig(String(portalId));
+      if (config?.hsToken) token = config.hsToken;
+    } catch (err) {
+      console.warn("Could not load config for stored token:", err.message);
+    }
+  }
+
   if (!token) {
-    return res.status(401).json({ status: "ERROR", message: "Missing Authorization header." });
+    return res.status(401).json({ status: "ERROR", message: "Missing authorization." });
   }
 
   const {
-    apiKey,
-    tagHash,
+    apiKey, tagHash,
     triggerMode = "contact_created",
     comprehensiveMode = true,
     phoneValidation = true,
@@ -32,8 +45,6 @@ export default async function handler(req, res) {
 
   const mode = comprehensiveMode ? "comprehensive" : "standard";
 
-  // Build the URL-encoded request body for the CHEQ API call
-  // HubSpot workflow webhook action supports {% contact.property %} tokens
   const cheqRequestBody = [
     `ApiKey=${encodeURIComponent(apiKey)}`,
     `TagHash=${encodeURIComponent(tagHash)}`,
@@ -47,7 +58,7 @@ export default async function handler(req, res) {
     phoneValidation ? `Phone={% contact.phone %}` : null,
   ].filter(Boolean).join("&");
 
-  // Delete existing workflow with same name to allow redeployment
+  // Delete existing workflow with same name
   try {
     const listResp = await fetch("https://api.hubapi.com/automation/v4/flows", {
       headers: { Authorization: `Bearer ${token}` },
@@ -65,7 +76,6 @@ export default async function handler(req, res) {
     console.warn("Could not check/delete existing workflow:", e.message);
   }
 
-  // Build enrollment criteria based on trigger mode
   const enrollmentCriteria = {
     shouldReEnroll: false,
     type: triggerMode === "form_submission" ? "PROPERTY_VALUE" : "CONTACT_CREATED",
@@ -85,7 +95,6 @@ export default async function handler(req, res) {
     },
   };
 
-  // For "both" trigger mode, use CONTACT_CREATED as primary
   if (triggerMode === "both") {
     enrollmentCriteria.type = "CONTACT_CREATED";
     enrollmentCriteria.shouldReEnroll = true;
@@ -105,13 +114,13 @@ export default async function handler(req, res) {
           contentType: "APPLICATION_X_WWW_FORM_URLENCODED",
           requestBody: cheqRequestBody,
           responsePropertyMappings: [
-            { responsePath: "action",             contactProperty: "cq_action"        },
-            { responsePath: "detected_verdict",   contactProperty: "cq_verdict"       },
-            { responsePath: "risk_score",         contactProperty: "cq_risk_score"    },
-            { responsePath: "threat_type_code",   contactProperty: "cq_threat_type"   },
+            { responsePath: "action", contactProperty: "cq_action" },
+            { responsePath: "detected_verdict", contactProperty: "cq_verdict" },
+            { responsePath: "risk_score", contactProperty: "cq_risk_score" },
+            { responsePath: "threat_type_code", contactProperty: "cq_threat_type" },
             { responsePath: "user.email.verdict", contactProperty: "cq_email_verdict" },
             { responsePath: "user.phone.verdict", contactProperty: "cq_phone_verdict" },
-            { responsePath: "request_id",         contactProperty: "cq_req_id"        },
+            { responsePath: "request_id", contactProperty: "cq_req_id" },
           ],
         },
       },
@@ -147,7 +156,7 @@ export default async function handler(req, res) {
 
   return res.status(500).json({
     status: "ERROR",
-    message: createData?.message || "Failed to create workflow. Ensure your portal has Professional or Enterprise Workflows.",
+    message: createData?.message || "Failed to create workflow.",
     details: createData,
   });
 }

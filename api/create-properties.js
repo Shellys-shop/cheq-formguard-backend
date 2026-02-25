@@ -1,6 +1,12 @@
 // api/create-properties.js
-// Creates the CHEQ Form Guard property group and contact properties in HubSpot
-// Called from HubSpot UI Extension via hubspot.fetch()
+// Creates the CHEQ Form Guard property group and contact properties in HubSpot.
+// Called from HubSpot UI Extension via hubspot.fetch().
+//
+// FIX: Loads the stored hsToken from Blob config (saved during Step 1)
+// so properties are created using the portal's token, not the OAuth
+// token from hubspot.fetch() which may have limited scopes.
+
+import { loadConfig } from "./save-config.js";
 
 const GROUP = {
   name: "cheq_formguard",
@@ -26,8 +32,8 @@ const PROPERTIES = [
     type: "enumeration",
     fieldType: "select",
     options: [
-      { label: "Allow",   value: "allow",   displayOrder: 0, hidden: false, description: "" },
-      { label: "Deny",    value: "deny",    displayOrder: 1, hidden: false, description: "" },
+      { label: "Allow", value: "allow", displayOrder: 0, hidden: false, description: "" },
+      { label: "Deny", value: "deny", displayOrder: 1, hidden: false, description: "" },
       { label: "Monitor", value: "monitor", displayOrder: 2, hidden: false, description: "" },
     ],
   },
@@ -39,10 +45,10 @@ const PROPERTIES = [
     type: "enumeration",
     fieldType: "select",
     options: [
-      { label: "Valid",      value: "valid",      displayOrder: 0, hidden: false, description: "" },
-      { label: "Malicious",  value: "malicious",  displayOrder: 1, hidden: false, description: "" },
+      { label: "Valid", value: "valid", displayOrder: 0, hidden: false, description: "" },
+      { label: "Malicious", value: "malicious", displayOrder: 1, hidden: false, description: "" },
       { label: "Suspicious", value: "suspicious", displayOrder: 2, hidden: false, description: "" },
-      { label: "Unknown",    value: "unknown",    displayOrder: 3, hidden: false, description: "" },
+      { label: "Unknown", value: "unknown", displayOrder: 3, hidden: false, description: "" },
     ],
   },
   {
@@ -69,10 +75,10 @@ const PROPERTIES = [
     type: "enumeration",
     fieldType: "select",
     options: [
-      { label: "Valid",      value: "valid",      displayOrder: 0, hidden: false, description: "" },
-      { label: "Malicious",  value: "malicious",  displayOrder: 1, hidden: false, description: "" },
+      { label: "Valid", value: "valid", displayOrder: 0, hidden: false, description: "" },
+      { label: "Malicious", value: "malicious", displayOrder: 1, hidden: false, description: "" },
       { label: "Suspicious", value: "suspicious", displayOrder: 2, hidden: false, description: "" },
-      { label: "Unknown",    value: "unknown",    displayOrder: 3, hidden: false, description: "" },
+      { label: "Unknown", value: "unknown", displayOrder: 3, hidden: false, description: "" },
     ],
   },
   {
@@ -83,10 +89,10 @@ const PROPERTIES = [
     type: "enumeration",
     fieldType: "select",
     options: [
-      { label: "Valid",      value: "valid",      displayOrder: 0, hidden: false, description: "" },
-      { label: "Malicious",  value: "malicious",  displayOrder: 1, hidden: false, description: "" },
+      { label: "Valid", value: "valid", displayOrder: 0, hidden: false, description: "" },
+      { label: "Malicious", value: "malicious", displayOrder: 1, hidden: false, description: "" },
       { label: "Suspicious", value: "suspicious", displayOrder: 2, hidden: false, description: "" },
-      { label: "Unknown",    value: "unknown",    displayOrder: 3, hidden: false, description: "" },
+      { label: "Unknown", value: "unknown", displayOrder: 3, hidden: false, description: "" },
     ],
   },
   {
@@ -108,21 +114,49 @@ async function hubspotRequest(path, method, body, token) {
     },
     body: body ? JSON.stringify(body) : undefined,
   });
-  return { status: response.status, data: await response.json() };
+
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    data = { message: `HTTP ${response.status}` };
+  }
+  return { status: response.status, data };
 }
 
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://app.hubspot.com");
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  // HubSpot passes the portal access token in Authorization header
-  const token = req.headers.authorization?.replace("Bearer ", "");
+  // Try multiple token sources:
+  // 1. Authorization header from hubspot.fetch() (OAuth token)
+  // 2. Stored hsToken from config (private app token saved in Step 1)
+  let token = req.headers.authorization?.replace("Bearer ", "") || null;
+  const portalId = req.body?.portalId;
+
+  // If we have a portalId, try to load the stored token which may have
+  // broader scopes (e.g. crm.schemas.contacts.write)
+  if (portalId) {
+    try {
+      const config = await loadConfig(String(portalId));
+      if (config?.hsToken) {
+        token = config.hsToken;
+        console.log(`Using stored hsToken for portal ${portalId}`);
+      }
+    } catch (err) {
+      console.warn("Could not load config for stored token:", err.message);
+    }
+  }
+
   if (!token) {
-    return res.status(401).json({ status: "ERROR", message: "Missing Authorization header." });
+    return res.status(401).json({
+      status: "ERROR",
+      message: "No authorization token available. Please save your configuration in Step 1 first, or ensure your app has the required OAuth scopes.",
+    });
   }
 
   const results = { created: 0, skipped: 0, errors: [] };
@@ -134,12 +168,14 @@ export default async function handler(req, res) {
     GROUP,
     token
   );
+
   if (groupResp.status === 201) {
     console.log("Created group: cheq_formguard");
   } else if (groupResp.status === 409) {
     console.log("Group already exists");
   } else {
-    console.error("Group creation error:", groupResp.data);
+    console.error("Group creation error:", groupResp.status, groupResp.data);
+    // Don't fail hard — the group might already exist with a different error code
   }
 
   // 2. Create each property
@@ -150,19 +186,30 @@ export default async function handler(req, res) {
       prop,
       token
     );
+
     if (propResp.status === 201) {
       results.created++;
+      console.log(`Created: ${prop.name}`);
     } else if (propResp.status === 409) {
       results.skipped++;
+      console.log(`Already exists: ${prop.name}`);
     } else {
-      results.errors.push({ name: prop.name, error: propResp.data?.message });
+      const errMsg = propResp.data?.message || `HTTP ${propResp.status}`;
+      results.errors.push({ name: prop.name, error: errMsg, status: propResp.status });
+      console.error(`Failed to create ${prop.name}:`, propResp.status, errMsg);
     }
   }
 
   if (results.errors.length > 0) {
-    return res.status(500).json({
+    // Check if all errors are permission-related
+    const allForbidden = results.errors.every((e) => e.status === 403);
+    const message = allForbidden
+      ? `Permission denied. Your app needs the "crm.schemas.contacts.write" scope. Go to your Developer Account > Apps > CHEQ Form Guard > Auth > Scopes and add it, then re-install the app.`
+      : `Some properties failed: ${results.errors.map((e) => `${e.name} (${e.error})`).join(", ")}`;
+
+    return res.status(allForbidden ? 403 : 500).json({
       status: "ERROR",
-      message: `Some properties failed: ${results.errors.map((e) => e.name).join(", ")}`,
+      message,
       results,
     });
   }
