@@ -2,7 +2,7 @@
 // Validates CHEQ credentials and persists config to Vercel Blob keyed by portalId.
 // Called from the HubSpot UI Extension via hubspot.fetch().
 
-import { put, list } from "@vercel/blob";
+import { put, list, del } from "@vercel/blob";
 const https = require("https");
 
 // ─── In-memory cache ────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ const blobPath = (portalId) => `configs/portal-${portalId}.json`;
 
 export async function saveConfig(portalId, config) {
   await put(blobPath(portalId), JSON.stringify(config), {
-    access: "public",
+    access: "private",
     addRandomSuffix: false,
     contentType: "application/json",
   });
@@ -39,15 +39,22 @@ export async function loadConfig(portalId) {
   const cached = getCached(portalId);
   if (cached) return cached;
 
-  const { blobs } = await list({ prefix: blobPath(portalId) });
-  if (!blobs.length) return null;
+  try {
+    const { blobs } = await list({ prefix: blobPath(portalId) });
+    if (!blobs.length) return null;
 
-  const response = await fetch(blobs[0].url);
-  if (!response.ok) return null;
+    // For private blobs, use downloadUrl (authenticated) instead of url (public)
+    const downloadUrl = blobs[0].downloadUrl || blobs[0].url;
+    const response = await fetch(downloadUrl);
+    if (!response.ok) return null;
 
-  const config = await response.json();
-  setCached(portalId, config);
-  return config;
+    const config = await response.json();
+    setCached(portalId, config);
+    return config;
+  } catch (err) {
+    console.error("loadConfig error for portal", portalId, err);
+    return null;
+  }
 }
 
 // ─── Validate CHEQ credentials ──────────────────────────────────────────────
