@@ -2,7 +2,7 @@
 // Validates CHEQ credentials and persists config to Vercel Blob keyed by portalId.
 // Called from the HubSpot UI Extension via hubspot.fetch().
 
-import { put, list, del } from "@vercel/blob";
+import { put, get } from "@vercel/blob";
 const https = require("https");
 
 // ─── In-memory cache ────────────────────────────────────────────────────────
@@ -40,18 +40,25 @@ export async function loadConfig(portalId) {
   if (cached) return cached;
 
   try {
-    const { blobs } = await list({ prefix: blobPath(portalId) });
-    if (!blobs.length) return null;
+    const response = await get(blobPath(portalId), { access: "private" });
+    if (!response || !response.stream) return null;
 
-    // For private blobs, use downloadUrl (authenticated) instead of url (public)
-    const downloadUrl = blobs[0].downloadUrl || blobs[0].url;
-    const response = await fetch(downloadUrl);
-    if (!response.ok) return null;
-
-    const config = await response.json();
+    const reader = response.stream.getReader();
+    const chunks = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    const text = Buffer.concat(chunks).toString("utf-8");
+    const config = JSON.parse(text);
     setCached(portalId, config);
     return config;
   } catch (err) {
+    // Blob not found returns an error
+    if (err?.message?.includes("not found") || err?.code === "blob_not_found") {
+      return null;
+    }
     console.error("loadConfig error for portal", portalId, err);
     return null;
   }
