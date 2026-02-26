@@ -136,7 +136,15 @@ export default async function handler(req, res) {
   // 1. Authorization header from hubspot.fetch() (OAuth token)
   // 2. Stored hsToken from config (private app token saved in Step 1)
   let token = req.headers.authorization?.replace("Bearer ", "") || null;
-  const portalId = req.body?.portalId;
+  const portalId = req.body?.portalId || req.query?.portalId || null;
+
+  console.log("create-properties debug:", {
+    hasAuthHeader: !!req.headers.authorization,
+    tokenLength: token?.length,
+    portalIdFromBody: req.body?.portalId,
+    portalIdFromQuery: req.query?.portalId,
+    resolvedPortalId: portalId,
+  });
 
   // If we have a portalId, try to load the stored token which may have
   // broader scopes (e.g. crm.schemas.contacts.write)
@@ -146,6 +154,8 @@ export default async function handler(req, res) {
       if (config?.hsToken) {
         token = config.hsToken;
         console.log(`Using stored hsToken for portal ${portalId}`);
+      } else {
+        console.log(`No stored hsToken found for portal ${portalId}, using OAuth header token`);
       }
     } catch (err) {
       console.warn("Could not load config for stored token:", err.message);
