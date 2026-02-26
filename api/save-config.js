@@ -213,34 +213,52 @@ export default async function handler(req, res) {
 
   // Try body first, then query string as fallback
   const portalId = req.body?.portalId || req.query?.portalId || null;
+  const skipCredentialValidation = req.body?.skipCredentialValidation === true;
   const apiKey = req.body?.apiKey;
   const tagHash = req.body?.tagHash;
+  const hostDomain = req.body?.hostDomain;
   const mode = req.body?.mode;
   const observationMode = req.body?.observationMode;
   const gibberishEngine = req.body?.gibberishEngine;
   const phoneValidation = req.body?.phoneValidation;
   const comprehensiveMode = req.body?.comprehensiveMode;
 
-  // Debug logging
-  console.log("POST /api/save-config", {
-    bodyType: typeof req.body,
-    bodyKeys: req.body ? Object.keys(req.body) : "null",
-    portalIdFromBody: req.body?.portalId,
-    portalIdFromQuery: req.query?.portalId,
-    resolvedPortalId: portalId,
-    hasApiKey: !!apiKey,
-    hasTagHash: !!tagHash,
-    contentType: req.headers["content-type"],
-  });
+  if (!portalId) {
+    return res.status(400).json({ status: "ERROR", message: "portalId is required." });
+  }
+
+  // If credentials are unchanged (masked), just update settings
+  if (skipCredentialValidation) {
+    try {
+      const existing = await loadConfig(String(portalId));
+      if (!existing) {
+        return res.status(400).json({ status: "ERROR", message: "No saved config found. Please enter your API credentials." });
+      }
+
+      // Merge new settings into existing config
+      existing.mode = comprehensiveMode !== false ? "comprehensive" : (mode || "standard");
+      existing.observationMode = observationMode === true || observationMode === "true";
+      existing.gibberishEngine = gibberishEngine !== false;
+      existing.phoneValidation = phoneValidation !== false;
+      if (hostDomain) existing.hostDomain = hostDomain;
+      existing.savedAt = new Date().toISOString();
+
+      await saveConfig(String(portalId), existing);
+      console.log(`Settings updated (no credential change) for portal ${portalId}`);
+
+      return res.status(200).json({
+        status: "SUCCESS",
+        message: "Settings updated.",
+        webhookUrl: "https://cheq-formguard-backend.vercel.app/api/cheq-validate",
+      });
+    } catch (err) {
+      console.error("Settings update error:", err);
+      return res.status(500).json({ status: "ERROR", message: "Failed to update settings." });
+    }
+  }
 
   if (!apiKey || !tagHash) {
     return res.status(400).json({ status: "ERROR", message: "API Key and Tag Hash are required." });
-  }
-  if (!portalId) {
-    return res.status(400).json({
-      status: "ERROR",
-      message: `portalId is required. Debug: body=${JSON.stringify(req.body?.portalId)}, query=${JSON.stringify(req.query?.portalId)}, bodyType=${typeof req.body}, bodyKeys=${req.body ? Object.keys(req.body).join(",") : "null"}`,
-    });
   }
 
   const validation = await testCheqCredentials(apiKey, tagHash);
@@ -248,11 +266,19 @@ export default async function handler(req, res) {
     return res.status(400).json({ status: "ERROR", message: validation.error });
   }
 
+  // Load existing config to preserve OAuth tokens
+  let existing = {};
+  try {
+    const prev = await loadConfig(String(portalId));
+    if (prev) existing = prev;
+  } catch (e) { /* no existing config */ }
+
   const config = {
+    ...existing,
     portalId: String(portalId),
     apiKey,
     tagHash,
-    hsToken,
+    hostDomain: hostDomain || existing.hostDomain,
     mode: comprehensiveMode !== false ? "comprehensive" : (mode || "standard"),
     observationMode: observationMode === true || observationMode === "true",
     gibberishEngine: gibberishEngine !== false,
