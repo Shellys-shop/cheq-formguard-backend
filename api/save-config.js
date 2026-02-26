@@ -5,6 +5,60 @@
 import { put, get } from "@vercel/blob";
 const https = require("https");
 
+// ─── Token refresh helper ────────────────────────────────────────────────────
+export async function getValidToken(portalId) {
+  const config = await loadConfig(String(portalId));
+  if (!config) return null;
+
+  // If token is still valid (with 5 min buffer), return it
+  if (config.hsToken && config.tokenExpiresAt && Date.now() < (config.tokenExpiresAt - 300000)) {
+    return config.hsToken;
+  }
+
+  // Token expired — try to refresh
+  if (config.refreshToken) {
+    const CLIENT_ID = process.env.HUBSPOT_CLIENT_ID;
+    const CLIENT_SECRET = process.env.HUBSPOT_CLIENT_SECRET;
+
+    if (!CLIENT_ID || !CLIENT_SECRET) {
+      console.warn("Cannot refresh token: missing CLIENT_ID/SECRET env vars");
+      // Return expired token as last resort — it might still work briefly
+      return config.hsToken || null;
+    }
+
+    try {
+      const resp = await fetch("https://api.hubapi.com/oauth/v1/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: CLIENT_ID,
+          client_secret: CLIENT_SECRET,
+          refresh_token: config.refreshToken,
+        }),
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        config.hsToken = data.access_token;
+        if (data.refresh_token) config.refreshToken = data.refresh_token;
+        config.tokenExpiresAt = Date.now() + (data.expires_in * 1000);
+        await saveConfig(String(portalId), config);
+        console.log("Refreshed OAuth token for portal", portalId);
+        return data.access_token;
+      } else {
+        const err = await resp.json();
+        console.error("Token refresh failed:", err);
+      }
+    } catch (err) {
+      console.error("Token refresh error:", err);
+    }
+  }
+
+  // Return whatever token we have, even if expired
+  return config.hsToken || null;
+}
+
 // ─── In-memory cache ────────────────────────────────────────────────────────
 const configCache = new Map();
 const CACHE_TTL_MS = 5 * 60 * 1000;

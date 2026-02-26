@@ -6,7 +6,7 @@
 // so properties are created using the portal's token, not the OAuth
 // token from hubspot.fetch() which may have limited scopes.
 
-import { loadConfig } from "./save-config.js";
+import { loadConfig, getValidToken } from "./save-config.js";
 
 const GROUP = {
   name: "cheq_formguard",
@@ -133,44 +133,40 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   // Try multiple token sources:
-  // 1. Authorization header from hubspot.fetch() (OAuth token)
-  // 2. Stored hsToken from config (saved in Step 1)
-  // 3. HUBSPOT_ACCESS_TOKEN env var (developer account token)
+  // 1. Authorization header (unlikely from hubspot.fetch to external)
+  // 2. OAuth token from Blob config (with auto-refresh)
+  // 3. HUBSPOT_ACCESS_TOKEN env var (fallback for dev)
   let token = req.headers.authorization?.replace("Bearer ", "") || null;
   const portalId = req.body?.portalId || req.query?.portalId || null;
 
   console.log("create-properties debug:", {
-    hasAuthHeader: !!req.headers.authorization,
-    tokenLength: token?.length,
-    portalIdFromBody: req.body?.portalId,
-    portalIdFromQuery: req.query?.portalId,
-    resolvedPortalId: portalId,
-    hasEnvToken: !!process.env.HUBSPOT_ACCESS_TOKEN,
+    hasAuthHeader: !!token,
+    portalId,
   });
 
-  // If we have a portalId, try to load the stored token
+  // Try to get a valid OAuth token (with refresh if expired)
   if (portalId && !token) {
     try {
-      const config = await loadConfig(String(portalId));
-      if (config?.hsToken) {
-        token = config.hsToken;
-        console.log(`Using stored hsToken for portal ${portalId}`);
+      const oauthToken = await getValidToken(String(portalId));
+      if (oauthToken) {
+        token = oauthToken;
+        console.log("Using OAuth token from Blob for portal", portalId);
       }
     } catch (err) {
-      console.warn("Could not load config for stored token:", err.message);
+      console.warn("Could not get OAuth token:", err.message);
     }
   }
 
-  // Fallback to env var token
+  // Fallback to env var
   if (!token && process.env.HUBSPOT_ACCESS_TOKEN) {
     token = process.env.HUBSPOT_ACCESS_TOKEN;
-    console.log("Using HUBSPOT_ACCESS_TOKEN env var");
+    console.log("Using HUBSPOT_ACCESS_TOKEN env var (fallback)");
   }
 
   if (!token) {
     return res.status(401).json({
       status: "ERROR",
-      message: "No authorization token available. Please save your configuration in Step 1 first, or add HUBSPOT_ACCESS_TOKEN env var.",
+      message: "No authorization token available. Please re-install the app to complete OAuth setup, or add HUBSPOT_ACCESS_TOKEN env var.",
     });
   }
 
