@@ -139,19 +139,39 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   // ── POST — validate credentials + save config ──
-  const {
-    portalId, apiKey, tagHash, mode,
-    observationMode, gibberishEngine, phoneValidation, comprehensiveMode,
-  } = req.body;
-
   // hubspot.fetch() passes the OAuth token in the Authorization header
   const hsToken = req.headers.authorization?.replace("Bearer ", "") || null;
+
+  // Try body first, then query string as fallback
+  const portalId = req.body?.portalId || req.query?.portalId || null;
+  const apiKey = req.body?.apiKey;
+  const tagHash = req.body?.tagHash;
+  const mode = req.body?.mode;
+  const observationMode = req.body?.observationMode;
+  const gibberishEngine = req.body?.gibberishEngine;
+  const phoneValidation = req.body?.phoneValidation;
+  const comprehensiveMode = req.body?.comprehensiveMode;
+
+  // Debug logging
+  console.log("POST /api/save-config", {
+    bodyType: typeof req.body,
+    bodyKeys: req.body ? Object.keys(req.body) : "null",
+    portalIdFromBody: req.body?.portalId,
+    portalIdFromQuery: req.query?.portalId,
+    resolvedPortalId: portalId,
+    hasApiKey: !!apiKey,
+    hasTagHash: !!tagHash,
+    contentType: req.headers["content-type"],
+  });
 
   if (!apiKey || !tagHash) {
     return res.status(400).json({ status: "ERROR", message: "API Key and Tag Hash are required." });
   }
   if (!portalId) {
-    return res.status(400).json({ status: "ERROR", message: "portalId is required." });
+    return res.status(400).json({
+      status: "ERROR",
+      message: `portalId is required. Debug: body=${JSON.stringify(req.body?.portalId)}, query=${JSON.stringify(req.query?.portalId)}, bodyType=${typeof req.body}, bodyKeys=${req.body ? Object.keys(req.body).join(",") : "null"}`,
+    });
   }
 
   const validation = await testCheqCredentials(apiKey, tagHash);
