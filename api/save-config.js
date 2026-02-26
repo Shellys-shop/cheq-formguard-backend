@@ -178,16 +178,96 @@ export default async function handler(req, res) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // ── GET — load saved config ──
+  // ── GET — load saved config OR save via query params ──
+  // hubspot.fetch() only supports GET to external URLs, so save uses action=save in query
   if (req.method === "GET") {
-    const { portalId } = req.query;
+    const { portalId, action } = req.query;
     if (!portalId) return res.status(400).json({ status: "ERROR", message: "portalId required" });
 
+    // ── Save action (via GET query params since hubspot.fetch doesn't support POST) ──
+    if (action === "save") {
+      const q = req.query;
+      const skipCredentialValidation = q.skipCredentialValidation === "true";
+
+      if (skipCredentialValidation) {
+        // Just update settings, don't re-validate credentials
+        try {
+          const existing = await loadConfig(String(portalId));
+          if (!existing) {
+            return res.status(400).json({ status: "ERROR", message: "No saved config found. Please enter your API credentials." });
+          }
+          existing.mode = q.comprehensiveMode === "true" ? "comprehensive" : (q.mode || "standard");
+          existing.observationMode = q.observationMode === "true";
+          existing.gibberishEngine = q.gibberishEngine !== "false";
+          existing.phoneValidation = q.phoneValidation !== "false";
+          existing.savedAt = new Date().toISOString();
+          await saveConfig(String(portalId), existing);
+          console.log(`Settings updated (no credential change) for portal ${portalId}`);
+          return res.status(200).json({
+            status: "SUCCESS",
+            message: "Settings updated.",
+            webhookUrl: "https://cheq-formguard-backend.vercel.app/api/cheq-validate",
+          });
+        } catch (err) {
+          console.error("Settings update error:", err);
+          return res.status(500).json({ status: "ERROR", message: "Failed to update settings." });
+        }
+      }
+
+      // Full save with credential validation
+      const apiKey = q.apiKey;
+      const tagHash = q.tagHash;
+
+      if (!apiKey || !tagHash) {
+        return res.status(400).json({ status: "ERROR", message: "API Key and Tag Hash are required." });
+      }
+
+      // Validate with CHEQ
+      const validation = await validateCheqCredentials(apiKey, tagHash);
+      if (!validation.valid) {
+        return res.status(400).json({ status: "ERROR", message: validation.error });
+      }
+
+      // Merge with existing config to preserve OAuth tokens
+      let existing = {};
+      try {
+        const prev = await loadConfig(String(portalId));
+        if (prev) existing = prev;
+      } catch (e) { /* no existing config */ }
+
+      const config = {
+        ...existing,
+        portalId: String(portalId),
+        apiKey,
+        tagHash,
+        mode: q.comprehensiveMode === "true" ? "comprehensive" : (q.mode || "standard"),
+        observationMode: q.observationMode === "true",
+        gibberishEngine: q.gibberishEngine !== "false",
+        phoneValidation: q.phoneValidation !== "false",
+        savedAt: new Date().toISOString(),
+      };
+
+      try {
+        await saveConfig(String(portalId), config);
+        console.log(`Config saved for portal ${portalId}`);
+      } catch (err) {
+        console.error("Blob save error:", err);
+        return res.status(500).json({ status: "ERROR", message: "Credentials validated but failed to save." });
+      }
+
+      return res.status(200).json({
+        status: "SUCCESS",
+        message: "Configuration saved and credentials validated.",
+        webhookUrl: "https://cheq-formguard-backend.vercel.app/api/cheq-validate",
+      });
+    }
+
+    // ── Default GET — load config ──
     try {
       const config = await loadConfig(portalId);
       if (!config) return res.status(404).json({ status: "NOT_FOUND" });
 
-      const { apiKey, tagHash, hsToken, ...safe } = config;
+      const { apiKey, tagHash, hsToken, refreshToken, tokenExpiresAt, ...safe } = config;
       return res.status(200).json({
         status: "SUCCESS",
         config: {
