@@ -134,7 +134,8 @@ export default async function handler(req, res) {
 
   // Try multiple token sources:
   // 1. Authorization header from hubspot.fetch() (OAuth token)
-  // 2. Stored hsToken from config (private app token saved in Step 1)
+  // 2. Stored hsToken from config (saved in Step 1)
+  // 3. HUBSPOT_ACCESS_TOKEN env var (developer account token)
   let token = req.headers.authorization?.replace("Bearer ", "") || null;
   const portalId = req.body?.portalId || req.query?.portalId || null;
 
@@ -144,28 +145,32 @@ export default async function handler(req, res) {
     portalIdFromBody: req.body?.portalId,
     portalIdFromQuery: req.query?.portalId,
     resolvedPortalId: portalId,
+    hasEnvToken: !!process.env.HUBSPOT_ACCESS_TOKEN,
   });
 
-  // If we have a portalId, try to load the stored token which may have
-  // broader scopes (e.g. crm.schemas.contacts.write)
-  if (portalId) {
+  // If we have a portalId, try to load the stored token
+  if (portalId && !token) {
     try {
       const config = await loadConfig(String(portalId));
       if (config?.hsToken) {
         token = config.hsToken;
         console.log(`Using stored hsToken for portal ${portalId}`);
-      } else {
-        console.log(`No stored hsToken found for portal ${portalId}, using OAuth header token`);
       }
     } catch (err) {
       console.warn("Could not load config for stored token:", err.message);
     }
   }
 
+  // Fallback to env var token
+  if (!token && process.env.HUBSPOT_ACCESS_TOKEN) {
+    token = process.env.HUBSPOT_ACCESS_TOKEN;
+    console.log("Using HUBSPOT_ACCESS_TOKEN env var");
+  }
+
   if (!token) {
     return res.status(401).json({
       status: "ERROR",
-      message: "No authorization token available. Please save your configuration in Step 1 first, or ensure your app has the required OAuth scopes.",
+      message: "No authorization token available. Please save your configuration in Step 1 first, or add HUBSPOT_ACCESS_TOKEN env var.",
     });
   }
 
