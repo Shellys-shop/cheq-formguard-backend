@@ -84,6 +84,7 @@ export async function saveConfig(portalId, config) {
   await put(blobPath(portalId), JSON.stringify(config), {
     access: "private",
     addRandomSuffix: false,
+    allowOverwrite: true,
     contentType: "application/json",
   });
   setCached(portalId, config);
